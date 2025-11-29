@@ -1,0 +1,7 @@
+# --- requirements.txt ---
+pyTelegramBotAPI
+dotenv
+
+# For EC2 Version
+google-generativeai
+google-cloud-firestore

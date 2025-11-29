@@ -1,0 +1,6 @@
+.env
+__pycache__/
+chat_history.db
+db/
+
+service.json
