@@ -1,12 +1,13 @@
-
 # --- bot_handler.py ---
 import os
-from db_manager import get_history, add_message, clear_history,initialize_user_db
+from db_manager import get_history, add_message, clear_history, initialize_user_db
 from gemini_client import get_gemini_response, detect_image_intent, generate_nano_banana_prompt
 from config import MAX_TOKENS
 from utils import count_tokens, trim_history
 from text_to_image import generate_image  # Updated to handle both text and image
 import time
+import html
+import re
 
 # Default instruction to prepend to user prompts
 DEFAULT_PROMPT = ""
@@ -83,7 +84,7 @@ def handle_messages(bot, message):
             "SYSTEM NOTE: The user wants an image. You are providing a conversational response. "
             "A separate system is generating the technical prompt. "
             "Your job is ONLY to reply conversationally (e.g., 'That sounds like a cool concept! Here is the prompt:'). "
-            "DO NOT output the prompt yourself."
+            "DO NOT output the prompt yourself. DO NOT use the '[Generated Image Prompt]' tag."
         )
     else:
         full_prompt = f"{DEFAULT_PROMPT}\n\n{user_text}"
@@ -100,16 +101,34 @@ def handle_messages(bot, message):
     temp_history = history[:-1] + [{"role": "user", "content": full_prompt}]
     reply = get_gemini_response(temp_history)
     
-    # If we generated a prompt, append it to the reply
+    # Post-processing: Clean up any hallucinated prompt blocks from Gemini's reply
+    # This ensures we don't show the prompt twice (once from Gemini, once from our code block)
+    reply_clean = re.sub(r'\[Generated Image Prompt:.*?\]', '', reply, flags=re.DOTALL).strip()
+    
+    # Escape the reply to be safe for HTML
+    safe_reply = html.escape(reply_clean) if reply_clean else "..."
+    
+    # Prepare content for history (needs to include the prompt for context/consistency)
+    history_content = reply_clean
+    
+    # If we generated a prompt, append it to the reply for the USER and to the history for the MODEL
     if nano_banana_prompt:
-        reply += f"\n\nHere is the prompt to generate this image:\n```\n{nano_banana_prompt}\n```"
+        # For User: Add copyable code block
+        safe_prompt = html.escape(nano_banana_prompt)
+        safe_reply += f"\n\nHere is the prompt to generate this image:\n<pre><code>{safe_prompt}</code></pre>"
+        
+        # For History: Add the text marker so the model can read it later (for "Keep same face")
+        history_content += f"\n[Generated Image Prompt: {nano_banana_prompt}]"
 
-    # Add the user's original input and Gemini's reply to the history
-    history.append({"role": "model", "content": reply})
+    # Add the user's original input and the constructed history content to the history list
+    history.append({"role": "model", "content": history_content})
 
-    # Save the conversation history
+    # Save the conversation history to DB
     add_message(chat_id, {"role": "user", "content": user_text})
-    add_message(chat_id, {"role": "model", "content": reply})
+    add_message(chat_id, {"role": "model", "content": history_content})
 
     # Send the reply to the user
-    bot.reply_to(message, reply, parse_mode="Markdown")
+    if safe_reply.strip():
+        bot.reply_to(message, safe_reply, parse_mode="HTML")
+    else:
+        bot.reply_to(message, "I'm sorry, I couldn't generate a response.")
